@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Turf Bank Prototype</title>
+    <style>
+      :root {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0d1117;
+        color: #f0f6fc;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      #game-container {
+        position: relative;
+        width: 90vw;
+        height: 90vh;
+        max-width: 1200px;
+        max-height: 800px;
+        border: 2px solid rgba(240, 246, 252, 0.2);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+        background: radial-gradient(circle at top, rgba(12, 170, 75, 0.15), transparent 60%),
+          rgba(8, 28, 21, 0.9);
+      }
+
+      canvas {
+        position: absolute;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      #mower {
+        position: absolute;
+        width: 28px;
+        height: 40px;
+        pointer-events: none;
+        transition: transform 0.08s linear;
+        z-index: 2;
+      }
+
+      #mower::before,
+      #mower::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 8px 8px 4px 4px;
+      }
+
+      #mower::before {
+        background: linear-gradient(145deg, #de4936, #942d1f);
+        filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.45));
+      }
+
+      #mower::after {
+        inset: 6px;
+        border-radius: 4px;
+        background: linear-gradient(145deg, #232b36, #13181f);
+        box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.08);
+      }
+
+      #instructions {
+        position: absolute;
+        left: 16px;
+        bottom: 12px;
+        background: rgba(13, 17, 23, 0.75);
+        padding: 10px 14px;
+        border-radius: 10px;
+        border: 1px solid rgba(240, 246, 252, 0.08);
+        backdrop-filter: blur(10px);
+        font-size: 14px;
+        line-height: 1.4;
+        max-width: 240px;
+        z-index: 2;
+      }
+
+      code {
+        font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+          "Courier New", monospace;
+        color: #7ee787;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game-container">
+      <canvas id="scene"></canvas>
+      <div id="mower"></div>
+      <div id="instructions">
+        <strong>Mower Controls</strong>
+        <div><code>WASD</code> or <code>Arrow Keys</code> to drive.</div>
+        <div>Cut the blades by rolling over them.</div>
+      </div>
+    </div>
+
+    <script type="module">
+      import * as THREE from "https://unpkg.com/three@0.161.0/build/three.module.js";
+
+      const WIDTH = 100;
+      const DEPTH = 200;
+      const SPACING = 0.9;
+      const TALL_HEIGHT = 0.8;
+      const CUT_HEIGHT = 0.28;
+
+      const container = document.getElementById("game-container");
+      const canvas = document.getElementById("scene");
+      const mowerEl = document.getElementById("mower");
+
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0a120d);
+
+      const aspect = container.clientWidth / container.clientHeight;
+      const frustumSize = 140;
+      const camera = new THREE.OrthographicCamera(
+        (frustumSize * aspect) / -2,
+        (frustumSize * aspect) / 2,
+        frustumSize / 2,
+        frustumSize / -2,
+        -200,
+        600
+      );
+
+      camera.position.set(120, 120, 120);
+      camera.lookAt(0, 0, 0);
+
+      const ambient = new THREE.AmbientLight(0xb8d0bf, 0.65);
+      const sun = new THREE.DirectionalLight(0xffffff, 0.85);
+      sun.position.set(120, 200, 90);
+      scene.add(ambient, sun);
+
+      const groundGeometry = new THREE.PlaneGeometry(WIDTH * SPACING + 6, DEPTH * SPACING + 6, 1, 1);
+      const groundMaterial = new THREE.MeshLambertMaterial({
+        color: 0x0c2615,
+      });
+      const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = -0.01;
+      scene.add(ground);
+
+      const grassGeometry = new THREE.BoxGeometry(0.2, 1, 0.2);
+      const grassMaterial = new THREE.MeshLambertMaterial({ color: 0x42b66b, vertexColors: true });
+      const totalBlades = WIDTH * DEPTH;
+      const grass = new THREE.InstancedMesh(grassGeometry, grassMaterial, totalBlades);
+      grass.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      scene.add(grass);
+
+      const dummy = new THREE.Object3D();
+      const grassStates = new Array(totalBlades).fill("tall");
+      const tallColor = new THREE.Color(0x4cc577);
+      const cutColor = new THREE.Color(0x2f8a4d);
+
+      function setBladeTransform(index, state, initial = false) {
+        const xIndex = index % WIDTH;
+        const zIndex = Math.floor(index / WIDTH);
+        const x = (xIndex - WIDTH / 2) * SPACING + SPACING / 2;
+        const z = (zIndex - DEPTH / 2) * SPACING + SPACING / 2;
+        const height = state === "tall" ? TALL_HEIGHT : CUT_HEIGHT;
+        const yaw = initial ? (Math.random() - 0.5) * 0.3 : 0;
+
+        dummy.position.set(x, height / 2, z);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.scale.set(1, height, 1);
+        dummy.updateMatrix();
+        grass.setMatrixAt(index, dummy.matrix);
+        grass.setColorAt(index, state === "tall" ? tallColor : cutColor);
+      }
+
+      for (let i = 0; i < totalBlades; i += 1) {
+        setBladeTransform(i, "tall", true);
+      }
+      grass.instanceMatrix.needsUpdate = true;
+      grass.instanceColor.needsUpdate = true;
+
+      const mowerState = {
+        position: new THREE.Vector2(0, 0),
+        velocity: new THREE.Vector2(0, 0),
+        speed: 20,
+      };
+
+      const keys = new Set();
+
+      window.addEventListener("keydown", (event) => {
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "w", "a", "s", "d", "W", "A", "S", "D"].includes(event.key)) {
+          event.preventDefault();
+          keys.add(event.key.toLowerCase());
+        }
+      });
+
+      window.addEventListener("keyup", (event) => {
+        keys.delete(event.key.toLowerCase());
+      });
+
+      function updateMowerVelocity() {
+        const dir = new THREE.Vector2();
+        if (keys.has("w") || keys.has("arrowup")) dir.y -= 1;
+        if (keys.has("s") || keys.has("arrowdown")) dir.y += 1;
+        if (keys.has("a") || keys.has("arrowleft")) dir.x -= 1;
+        if (keys.has("d") || keys.has("arrowright")) dir.x += 1;
+
+        if (dir.lengthSq() > 0) {
+          dir.normalize();
+          mowerState.velocity.copy(dir.multiplyScalar(mowerState.speed));
+        } else {
+          mowerState.velocity.set(0, 0);
+        }
+      }
+
+      function clampMowerPosition() {
+        const halfWidth = (WIDTH * SPACING) / 2;
+        const halfDepth = (DEPTH * SPACING) / 2;
+        mowerState.position.x = THREE.MathUtils.clamp(mowerState.position.x, -halfWidth, halfWidth);
+        mowerState.position.y = THREE.MathUtils.clamp(mowerState.position.y, -halfDepth, halfDepth);
+      }
+
+      function tryCutGrass() {
+        const halfWidth = (WIDTH * SPACING) / 2;
+        const halfDepth = (DEPTH * SPACING) / 2;
+        const gridX = Math.floor(((mowerState.position.x + halfWidth) / SPACING));
+        const gridZ = Math.floor(((mowerState.position.y + halfDepth) / SPACING));
+
+        if (gridX < 0 || gridX >= WIDTH || gridZ < 0 || gridZ >= DEPTH) {
+          return;
+        }
+
+        const index = gridZ * WIDTH + gridX;
+        if (grassStates[index] === "tall") {
+          grassStates[index] = "cut";
+          setBladeTransform(index, "cut");
+          grass.instanceMatrix.needsUpdate = true;
+          grass.instanceColor.needsUpdate = true;
+        }
+      }
+
+      const clock = new THREE.Clock();
+
+      function updateMowerOverlay() {
+        const world = new THREE.Vector3(mowerState.position.x, 0.4, mowerState.position.y);
+        const projected = world.clone().project(camera);
+        const x = (projected.x * 0.5 + 0.5) * container.clientWidth;
+        const y = (-projected.y * 0.5 + 0.5) * container.clientHeight;
+        mowerEl.style.transform = `translate(${x - mowerEl.clientWidth / 2}px, ${y - mowerEl.clientHeight / 2}px)`;
+      }
+
+      function onResize() {
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        renderer.setSize(width, height, false);
+
+        const aspect = width / height;
+        camera.left = (-frustumSize * aspect) / 2;
+        camera.right = (frustumSize * aspect) / 2;
+        camera.top = frustumSize / 2;
+        camera.bottom = -frustumSize / 2;
+        camera.updateProjectionMatrix();
+
+        updateMowerOverlay();
+      }
+
+      window.addEventListener("resize", onResize);
+      onResize();
+
+      function animate() {
+        requestAnimationFrame(animate);
+        const delta = clock.getDelta();
+        updateMowerVelocity();
+
+        mowerState.position.x += mowerState.velocity.x * delta;
+        mowerState.position.y += mowerState.velocity.y * delta;
+        clampMowerPosition();
+        tryCutGrass();
+        updateMowerOverlay();
+
+        renderer.render(scene, camera);
+      }
+
+      animate();
+    </script>
+  </body>
+</html>
